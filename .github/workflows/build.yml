@@ -17,8 +17,7 @@ jobs:
 
       - name: Clone Kernel Source (LineageOS 24.0)
         run: |
-          git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_samsung_exynos9830 kernel
-          cd kernel
+          git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_samsung_universal9830 kernel
 
       - name: Download Clang (AOSP r450784d - Stable for 4.19)
         run: |
@@ -34,12 +33,15 @@ jobs:
       - name: Configure Kernel
         run: |
           cd kernel
-          # Usamos el defconfig estándar de Lineage para y2s
-          make ARCH=arm64 CC=clang/clang-r450784d/bin/clang lineage_y2s_defconfig
+          # Base defconfig de LineageOS para universal9830
+          make ARCH=arm64 CC=clang/clang-r450784d/bin/clang exynos9830_defconfig
+          # Aplicar fragmento específico de y2s (S20+)
+          ./scripts/kconfig/merge_config.sh -m -r .config arch/arm64/configs/y2s.config
           # Aseguramos las variables obligatorias para non-GKI
-          scripts/config --file .config --set-str CONFIG_KSU y
-          scripts/config --file .config --set-str CONFIG_KALLSYMS y
-          scripts/config --file .config --set-str CONFIG_KALLSYMS_ALL y
+          scripts/config --file .config --enable CONFIG_KSU
+          scripts/config --file .config --enable CONFIG_KALLSYMS
+          scripts/config --file .config --enable CONFIG_KALLSYMS_ALL
+          make ARCH=arm64 CC=clang/clang-r450784d/bin/clang olddefconfig
 
       - name: Build Kernel
         run: |
