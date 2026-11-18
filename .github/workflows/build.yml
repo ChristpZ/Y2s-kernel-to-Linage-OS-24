@@ -1,4 +1,4 @@
-name: Build SukiSU Kernel for y2s
+name: Build SukiSU Kernel for y2s (Exynos 990)
 
 on:
   workflow_dispatch:
@@ -14,37 +14,40 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git curl build-essential bc bison flex \
-            libssl-dev libelf-dev libncurses-dev ccache python3 clang-14 lld-14
+            libssl-dev libelf-dev libncurses-dev ccache python3
 
-      - name: Clone Kernel Source
+      - name: Clone Kernel Source (LineageOS 24.0)
         run: |
           git clone --depth=1 -b lineage-24.0 \
             https://github.com/LineageOS/android_kernel_samsung_universal9830 kernel
 
-      - name: Inspect repo structure
+      - name: Download Correct Clang (r353983c)
         run: |
           cd kernel
-          echo "=== Archivos en raíz ==="
-          ls -la | head -30
-          echo "=== build.config.universal9830 ==="
-          cat build.config.universal9830 2>/dev/null | head -40 || echo "no existe"
-          echo "=== toolchain/ ==="
-          ls -la toolchain/ 2>/dev/null || echo "no existe toolchain/"
-          echo "=== arch/arm64/configs/ ==="
-          ls arch/arm64/configs/ | grep -E "y2s|exynos" || echo "no encontrado"
+          mkdir clang-toolchain
+          cd clang-toolchain
+          # Descargamos la versión EXACTA que pide el build.config
+          echo "Descargando Clang r353983c..."
+          curl -LO https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r353983c.tar.gz
+          if [ $? -ne 0 ]; then
+            echo "Error al descargar Clang. Intentando mirror..."
+            # Fallback si el enlace directo falla (a veces pasa con archives grandes)
+            curl -LO https://storage.googleapis.com/android-prebuilts/clang/host/linux-x86/clang-r353983c.tar.gz
+          fi
+          tar xzf clang-r353983c.tar.gz
+          rm clang-r353983c.tar.gz
+          echo "CLANG_PATH=$(pwd)/clang-r353983c" >> $GITHUB_ENV
+          ls -la
 
-      - name: Inject SukiSU
+      - name: Inject SukiSU (Builtin Mode)
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" \
-            | bash -s builtin
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
       - name: Configure Kernel
         run: |
           cd kernel
-          export PATH=/usr/lib/llvm-14/bin:$PATH
-          export CC=clang
-          export LD=ld.lld
+          export PATH=${{ env.CLANG_PATH }}/bin:$PATH
           make ARCH=arm64 CC=clang LD=ld.lld exynos9830_defconfig
           ./scripts/kconfig/merge_config.sh -m -r .config arch/arm64/configs/y2s.config
           scripts/config --file .config --enable CONFIG_KSU
@@ -55,11 +58,11 @@ jobs:
       - name: Build Kernel
         run: |
           cd kernel
-          export PATH=/usr/lib/llvm-14/bin:$PATH
+          export PATH=${{ env.CLANG_PATH }}/bin:$PATH
           make ARCH=arm64 CC=clang LD=ld.lld -j$(nproc)
 
-      - name: Upload Kernel Image
+      - name: Upload Artifact (Image)
         uses: actions/upload-artifact@v4
         with:
-          name: SukiSU-Kernel-y2s
+          name: SukiSU-Kernel-Image-y2s
           path: kernel/arch/arm64/boot/Image
