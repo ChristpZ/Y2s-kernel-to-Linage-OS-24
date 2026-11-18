@@ -1,0 +1,53 @@
+name: Build SukiSU Kernel for y2s (Exynos 990)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl build-essential bc bison flex libssl-dev libelf-dev libncurses-dev ccache
+
+      - name: Clone Kernel Source (LineageOS 24.0)
+        run: |
+          git clone --depth=1 -b lineage-24.0 https://github.com/LineageOS/android_kernel_samsung_exynos9830 kernel
+          cd kernel
+
+      - name: Download Clang (AOSP r450784d - Stable for 4.19)
+        run: |
+          cd kernel
+          mkdir clang
+          curl -sL https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784d.tar.gz | tar xz -C clang
+
+      - name: Inject SukiSU (Builtin Mode for Non-GKI)
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+
+      - name: Configure Kernel
+        run: |
+          cd kernel
+          # Usamos el defconfig estándar de Lineage para y2s
+          make ARCH=arm64 CC=clang/clang-r450784d/bin/clang lineage_y2s_defconfig
+          # Aseguramos las variables obligatorias para non-GKI
+          scripts/config --file .config --set-str CONFIG_KSU y
+          scripts/config --file .config --set-str CONFIG_KALLSYMS y
+          scripts/config --file .config --set-str CONFIG_KALLSYMS_ALL y
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          make ARCH=arm64 CC=clang/clang-r450784d/bin/clang -j$(nproc)
+
+      - name: Upload Artifact (Image)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Kernel-Image-y2s
+          path: kernel/arch/arm64/boot/Image
