@@ -1,0 +1,103 @@
+name: Build SukiSU Kernel for y2s (Exynos 990) - FINAL FIX
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev ccache python3 \
+            gcc-aarch64-linux-gnu
+
+      - name: Clone Kernel Source (LineageOS 24.0)
+        run: |
+          git clone --depth=1 -b lineage-24.0 \
+            https://github.com/LineageOS/android_kernel_samsung_universal9830 kernel
+
+      - name: Download Correct Clang (r353983c) via Sparse Clone
+        run: |
+          # Clonamos SOLO la carpeta clang-r353983c de la rama android10-release
+          # Esto evita descargar cientos de GB de otras versiones
+          echo "Clonando toolchain específica..."
+          git clone --depth=1 --filter=blob:none --sparse \
+            https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86 \
+            clang-toolchain
+          
+          cd clang-toolchain
+          git sparse-checkout set clang-r353983c
+          
+          # Exportamos la ruta para el resto del workflow
+          CLANG_PATH=$(pwd)/clang-r353983c
+          echo "CLANG_PATH=$CLANG_PATH" >> $GITHUB_ENV
+          echo "Usando Clang en: $CLANG_PATH"
+          ls -la $CLANG_PATH/bin/clang
+
+      - name: Inject SukiSU Nova (Builtin Mode)
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+          # Verificación rápida
+          if [ -d "drivers/kernelsu" ]; then
+            echo "✅ SukiSU inyectado correctamente en drivers/kernelsu"
+          else
+            echo "❌ Error: SukiSU no encontrado"
+            exit 1
+          fi
+
+      - name: Configure Kernel
+        run: |
+          cd kernel
+          export PATH=${{ env.CLANG_PATH }}/bin:$PATH
+          
+          # Configuración base usando el Clang correcto
+          make ARCH=arm64 CC=clang LD=ld.lld exynos9830_defconfig
+          
+          # Merge con config específica de y2s
+          ./scripts/kconfig/merge_config.sh -m -r .config arch/arm64/configs/y2s.config
+          
+          # Habilitar KernelSU y dependencias críticas
+          scripts/config --file .config --enable CONFIG_KSU
+          scripts/config --file .config --enable CONFIG_KPROBES
+          scripts/config --file .config --enable CONFIG_KPROBE_EVENTS
+          scripts/config --file .config --enable CONFIG_KALLSYMS
+          scripts/config --file .config --enable CONFIG_KALLSYMS_ALL
+          
+          # Actualizar config final
+          make ARCH=arm64 CC=clang LD=ld.lld olddefconfig
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          export PATH=${{ env.CLANG_PATH }}/bin:$PATH
+          # Compilación paralela
+          make ARCH=arm64 CC=clang LD=ld.lld -j$(nproc)
+
+      - name: Verify SukiSU is built in
+        run: |
+          cd kernel
+          echo "=== Verificando configuración ==="
+          grep -E "CONFIG_KSU|CONFIG_KPROBES|CONFIG_KALLSYMS" .config
+          
+          echo "=== Verificando strings en el Image ==="
+          if strings arch/arm64/boot/Image | grep -qi "ksu"; then
+            echo "✅ OK: KernelSU/SukiSU está dentro del Image"
+          else
+            echo "❌ ERROR: KernelSU no aparece en el Image"
+            exit 1
+          fi
+
+      - name: Upload Artifact (Image + config)
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Kernel-Image-y2s-FINAL
+          path: |
+            kernel/arch/arm64/boot/Image
+            kernel/.config
