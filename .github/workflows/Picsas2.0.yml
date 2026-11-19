@@ -1,0 +1,85 @@
+name: Build SukiSU Kernel for y2s (Exynos 990)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev ccache python3 \
+            gcc-aarch64-linux-gnu clang-14 lld-14 llvm-14
+
+      - name: Clone Kernel Source
+        run: |
+          git clone --depth=1 -b lineage-24.0 \
+            https://github.com/LineageOS/android_kernel_samsung_universal9830 kernel
+
+      - name: Inject SukiSU (Builtin)
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+
+      - name: Configure Kernel
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CC=clang-14
+          export LD=ld.lld-14
+          export AR=llvm-ar-14
+          export NM=llvm-nm-14
+          export OBJCOPY=llvm-objcopy-14
+          export OBJDUMP=llvm-objdump-14
+          export STRIP=llvm-strip-14
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+
+          make exynos9830_defconfig
+          ./scripts/kconfig/merge_config.sh -m -r .config arch/arm64/configs/y2s.config
+
+          # Fusionar el MALI_CONFIG que exige build.config.universal9830
+          MALI_CFG=$(find . -name "universal9830_mali.cfg" | head -1)
+          if [ -n "$MALI_CFG" ]; then
+            echo "Fusionando $MALI_CFG"
+            ./scripts/kconfig/merge_config.sh -m -r .config "$MALI_CFG"
+          fi
+
+          scripts/config --file .config --enable CONFIG_KSU
+          scripts/config --file .config --enable CONFIG_KALLSYMS
+          scripts/config --file .config --enable CONFIG_KALLSYMS_ALL
+          make olddefconfig
+
+      - name: Build Kernel
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CC=clang-14
+          export LD=ld.lld-14
+          export AR=llvm-ar-14
+          export NM=llvm-nm-14
+          export OBJCOPY=llvm-objcopy-14
+          export OBJDUMP=llvm-objdump-14
+          export STRIP=llvm-strip-14
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          make -j$(nproc)
+
+      - name: Verify SukiSU in Image
+        run: |
+          cd kernel
+          strings arch/arm64/boot/Image | grep -qi "ksu" && echo "✅ KernelSU dentro del Image" || { echo "❌ KernelSU no encontrado"; exit 1; }
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Kernel-Image-y2s
+          path: |
+            kernel/arch/arm64/boot/Image
+            kernel/.config
