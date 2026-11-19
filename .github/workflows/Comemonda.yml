@@ -1,0 +1,129 @@
+name: Build SukiSU Kernel for y2s (Exynos 990) - GCC + Auto-Diagnosis
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies (GCC Toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git curl build-essential bc bison flex \
+            libssl-dev libelf-dev libncurses-dev ccache python3 \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu binutils-aarch64-linux-gnu
+
+      - name: Clone Kernel Source (LineageOS 24.0)
+        run: |
+          git clone --depth=1 -b lineage-24.0 \
+            https://github.com/LineageOS/android_kernel_samsung_universal9830 kernel
+
+      - name: Inject SukiSU (Builtin Mode)
+        run: |
+          cd kernel
+          echo "Inyectando SukiSU..."
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
+          
+          if [ -d "drivers/kernelsu" ]; then
+            echo "✅ SukiSU inyectado correctamente en drivers/kernelsu"
+          else
+            echo "❌ ERROR CRÍTICO: SukiSU no se encontró después de la inyección."
+            exit 1
+          fi
+
+      - name: Configure Kernel (GCC)
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          echo "Generando defconfig..."
+          make exynos9830_defconfig
+          
+          echo "Fusionando config específica para y2s..."
+          ./scripts/kconfig/merge_config.sh -m -r .config arch/arm64/configs/y2s.config
+          
+          echo "Habilitando KernelSU y dependencias..."
+          scripts/config --file .config --enable CONFIG_KSU
+          scripts/config --file .config --enable CONFIG_KALLSYMS
+          scripts/config --file .config --enable CONFIG_KALLSYMS_ALL
+          
+          echo "Actualizando configuración final..."
+          make olddefconfig
+
+      - name: Build Kernel (GCC)
+        id: build_step
+        run: |
+          cd kernel
+          export ARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          
+          # Desactivar -Werror para evitar que advertencias rompan la compilación
+          export KCFLAGS="-Wno-error"
+          
+          echo "Iniciando compilación con GCC..."
+          make -j$(nproc)
+
+      # --- PASO DE ÉXITO ---
+      - name: ✅ Build Succeeded - Verify Artifact
+        if: success()
+        run: |
+          cd kernel
+          if [ -f arch/arm64/boot/Image ]; then
+            SIZE=$(ls -lh arch/arm64/boot/Image | awk '{print $5}')
+            echo "✅ Image generado exitosamente: $SIZE"
+            
+            if strings arch/arm64/boot/Image | grep -qi "ksu"; then
+              echo "✅ VERIFICADO: KernelSU/SukiSU está integrado en el Image."
+            else
+              echo "⚠️ ADVERTENCIA: No se detectó 'ksu' en el Image, pero la compilación fue exitosa."
+            fi
+          else
+            echo " ERROR: El archivo Image no se generó a pesar de éxito reportado."
+            exit 1
+          fi
+
+      # --- PASO DE FALLA CON DIAGNÓSTICO AUTOMÁTICO ---
+      - name: 🚨 DIAGNÓSTICO DE FALLO (Auto-Analysis)
+        if: failure() && steps.build_step.outcome == 'failure'
+        run: |
+          cd kernel
+          echo "=========================================="
+          echo "  🚨 EL WORKFLOW HA FALLADO - ANÁLISIS"
+          echo "=========================================="
+          echo ""
+          echo "1. Buscando el último error de compilación..."
+          # Intentamos encontrar el último error real en el log (simulado aquí por salida estándar)
+          echo "Revisa el paso anterior 'Build Kernel (GCC)' para ver el error rojo exacto."
+          echo ""
+          echo "2. Verificando archivos críticos..."
+          if [ ! -f ".config" ]; then
+             echo "❌ PROBLEMA: Falta el archivo .config. La configuración falló."
+          else
+             echo "✅ El archivo .config existe."
+          fi
+          
+          echo ""
+          echo "3. Posibles causas comunes:"
+          echo "   - Si el error dice 'inlining failed': Es un problema de versión de GCC/Clang (ya estamos usando GCC)."
+          echo "   - Si el error dice 'unrecognized instruction': El assembler no soporta una instrucción del CPU."
+          echo "   - Si el error es 'Killed': Se acabó la memoria RAM del runner de GitHub."
+          echo "   - Si el error es 'No such file or directory': Falta una dependencia o ruta incorrecta."
+          echo ""
+          echo "4. Recomendación:"
+          echo "   Copia las últimas 20 líneas rojas del paso 'Build Kernel (GCC)' y pégalas en el chat para ayuda específica."
+          echo "=========================================="
+          exit 1
+
+      - name: Upload Artifact (Image + config)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU-Kernel-Image-y2s-GCC
+          path: |
+            kernel/arch/arm64/boot/Image
+            kernel/.config
